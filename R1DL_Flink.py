@@ -11,9 +11,8 @@ import psutil
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.MapFunction import MapFunction
+from flink.plan.Constants import WriteMode
 from flink.plan.Environment import get_environment
-
-from functions import select_topr
 
 
 ###################################
@@ -56,6 +55,36 @@ def parse_and_normalize(line):
     # x -= x.mean()  # 0-mean.
     # x /= sla.norm(x)  # Unit norm.
     return x
+
+
+def select_topr(vct_input, r):
+    """
+    Returns the R-th greatest elements indices
+    in input vector and store them in idxs_n.
+    Here, we're using this function instead of
+    a complete sorting one, where it's more efficient
+    than complete sorting function in real big data application
+    parameters
+    ----------
+    vct_input : array, shape (T)
+        indicating the input vector which is a
+        vector we aimed to find the Rth greatest
+        elements. After finding those elements we
+        will store the indices of those specific
+        elements in output vector.
+    r : integer
+        indicates Rth greatest elemnts which we
+        are seeking for.
+    Returns
+    -------
+    idxs_n : array, shape (R)
+        a vector in which the Rth greatest elements
+        indices will be stored and returned as major
+        output of the function.
+    """
+    temp = np.argpartition(-vct_input, r)
+    idxs_n = temp[:r]
+    return idxs_n
 
 
 class VectorMatrixFlatMapper(FlatMapFunction):
@@ -271,7 +300,7 @@ if __name__ == "__main__":
 
         # Save the newly-computed u and v to the output files;
         u_new_final_expanded = u_new_final.flat_map(lambda x, c: list(x))
-        u_new_final_expanded.write_csv(file_D)
+        u_new_final_expanded.write_csv(file_D+"."+str(m))
 
         temp_v = v_collapsed.map(lambda x: np.zeros(x.shape))
         temp_v = temp_v.map(VFinalizerMapper()) \
@@ -279,13 +308,14 @@ if __name__ == "__main__":
 
         v_collapsed = temp_v
         v_expanded = v_collapsed.flat_map(lambda x, c: list(x))
-        v_expanded.write_csv(file_z)
+        v_expanded.write_csv(file_z+"."+str(m))
 
         # P4: Deflation step. Update the primary data matrix S.
         print m
         S = S.map(DeflateMapper()).group_by(0).aggregate(Sum, 0) \
             .with_broadcast_set("_U_", u_new_final) \
             .with_broadcast_set("_V_", v_collapsed)
+        print str(m) + " done"
 
     env.execute(local=True)
 
