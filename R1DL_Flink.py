@@ -3,15 +3,20 @@
 # Probably PEP 8 compliant.
 
 import argparse
+
+import itertools
+
 import numpy as np
 import scipy.linalg as sla
 import datetime
 import os
-import psutil
+
+import sys
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
+from flink.functions.GroupReduceFunction import GroupReduceFunction
 from flink.functions.MapFunction import MapFunction
-from flink.plan.Constants import WriteMode
+from flink.plan.Constants import Order, WriteMode, INT, FLOAT
 from flink.plan.Environment import get_environment
 
 
@@ -43,7 +48,7 @@ def parse_and_normalize(line):
     Utility function. Parses a line of text into a floating point array, then
     whitens the array.
     """
-    x = np.array(map(float, line.strip().split()))
+    x = tuple(map(float, line.strip().split()))
 
     # x.strip() -- strips off trailing whitespace from the string
     # .split("\t") -- splits the string into a list of strings, splitting on tabs
@@ -57,132 +62,141 @@ def parse_and_normalize(line):
     return x
 
 
-def select_topr(vct_input, r):
+# def select_topr(vct_input, r):
+#     """
+#     Returns the R-th greatest elements indices
+#     in input vector and store them in idxs_n.
+#     Here, we're using this function instead of
+#     a complete sorting one, where it's more efficient
+#     than complete sorting function in real big data application
+#     parameters
+#     ----------
+#     vct_input : array, shape (T)
+#         indicating the input vector which is a
+#         vector we aimed to find the Rth greatest
+#         elements. After finding those elements we
+#         will store the indices of those specific
+#         elements in output vector.
+#     r : integer
+#         indicates Rth greatest elemnts which we
+#         are seeking for.
+#     Returns
+#     -------
+#     idxs_n : array, shape (R)
+#         a vector in which the Rth greatest elements
+#         indices will be stored and returned as major
+#         output of the function.
+#     """
+#     temp = np.argpartition(-vct_input, r)
+#     idxs_n = temp[:r]
+#     return idxs_n
+
+
+def vector_matrix(u__, S_):
     """
-    Returns the R-th greatest elements indices
-    in input vector and store them in idxs_n.
-    Here, we're using this function instead of
-    a complete sorting one, where it's more efficient
-    than complete sorting function in real big data application
-    parameters
-    ----------
-    vct_input : array, shape (T)
-        indicating the input vector which is a
-        vector we aimed to find the Rth greatest
-        elements. After finding those elements we
-        will store the indices of those specific
-        elements in output vector.
-    r : integer
-        indicates Rth greatest elemnts which we
-        are seeking for.
-    Returns
-    -------
-    idxs_n : array, shape (R)
-        a vector in which the Rth greatest elements
-        indices will be stored and returned as major
-        output of the function.
+    Generates v using u.
     """
-    temp = np.argpartition(-vct_input, r)
-    idxs_n = temp[:r]
-    return idxs_n
+    v = u__ \
+        .join(S_).where(0).equal_to(0) \
+        .using(lambda u_el, v_el: (v_el[1], v_el[2] * u_el[1])) \
+        .name('VectorMatrix')
+
+    v = v \
+        .group_by(0) \
+        .aggregate(Sum, 1)
+
+    return v
 
 
-class VectorMatrixFlatMapper(FlatMapFunction):
-    def flat_map(self, row, collector):
-        """
-        Applies u * S by row-wise multiplication, followed by a reduction on
-        each column into a single vector.
-        """
+class VectorMatrixGroupReducer(GroupReduceFunction):
+    def reduce(self, iterator, collector):
+        S_original = self.context.get_broadcast_variable("S_orig")
+        iterator = np.array(sorted(iterator))
+        u__ = np.take(iterator, 1, axis=1)
 
-        u = np.array(self.context.get_broadcast_variable("_U_")[0][1])  # rm index
-
-        # comment by Xiang: in this case there is T*log(T) complexity?
-        # comment by Xiang: Also, whenever a "row_index, vector = row" is called,
-        # there will be a reading on the portion of S on each node, right?
-
-        row_index, vector = row  # Split up the [key, value] pair.
-
-        # Generate a list of [key, value] output pairs, one for each nonzero
-        # element of vector.
-        # comment by Xiang: the code below seems calculating all elements for
-        # vector v, rather than only the nonzero elements;
-        # comment by Xiang: also I'm puzzled why we are using the "append" function,
-        # as the output of this should be of the same size?
-        for i in range(vector.shape[0]):
-            collector.collect((i, u[row_index] * vector[i]))
+        for s in S_original:
+            k, vector = s
+            vector = np.array(vector)
+            for i in range(vector.shape[0]):
+                collector.collect((i, u__[k] * vector[i]))
 
 
-class NumpyCollapseFlatMapper(FlatMapFunction):
+class MatrixVectorGroupReducer(GroupReduceFunction):
     """
-    Convert an indexed DataSet of numbers (broadcasted) into a DataSet with a single Numpy vector element.
+    Applies S * v by row-wise multiplication. No reduction needed, as all the
+    summations are performed within this very function.
     """
+    def reduce(self, iterator, collector):
+        S_original = self.context.get_broadcast_variable("S_orig")
+        iterator = np.array(sorted(iterator))
+        i__ = np.take(iterator, 0, axis=1).astype(int)
+        v__ = np.take(iterator, 1, axis=1)
 
-    def flat_map(self, x, collector):
-        data = np.array(self.context.get_broadcast_variable("data"))
-        collector.collect(np.take(sorted(data), indices=1, axis=1))
-
-
-# class SelectTopRFlatMapper(MapFunction):
-#     def __init__(self, r):
-#         self.r = r
-#         super(SelectTopRFlatMapper, self).__init__()
-#
-#     def flat_map(self, element):
-#         v_ = self.context.get_broadcast_variable("_V_")
-#         v_ = np.array(v)
-#
+        for s in S_original:
+            k, vector = s
+            vector = np.array(vector)
+            innerprod = np.dot(vector[i__], v__)
+            collector.collect((k, innerprod))
 
 
+class RandomVectorFlatMapper(FlatMapFunction):
+    """
+    Takes a DataSet and replaces a single placeholder element with the elements
+    of a numpy.random.random vector.
+    """
+    def __init__(self, t_):
+        self.T = t_
+        super(RandomVectorFlatMapper, self).__init__()
 
-class MatrixVectorMapper(MapFunction):
-    def __init__(self, R_):
-        self.R = R_
-        super(MatrixVectorMapper, self).__init__()
-
-    def map(self, row):
-        """
-        Applies S * v by row-wise multiplication. No reduction needed, as all the
-        summations are performed within this very function.
-        """
-        k, vector = row
-
-        # Extract the broadcast variables.
-        v_collapsed_ = np.array(self.context.get_broadcast_variable("v_collapsed")[0])
-        v_top = np.array(self.context.get_broadcast_variable("v_top")[0])
-
-        _V_ = v_collapsed_[v_top]
-        _I_ = v_top
-
-        # Perform the multiplication using the specified indices in both arrays.
-        inner_prod = np.dot(vector[_I_], _V_)
-
-        # That's it! Return the [row, inner product] tuple.
-        return k, inner_prod
+    def flat_map(self, value, collector):
+        vec = np.random.random(self.T)
+        vec -= vec.mean()
+        vec /= sla.norm(vec)
+        return list(enumerate(vec))
 
 
-class VFinalizerMapper(MapFunction):
-    def map(self, value):
-        v_ = np.array(self.context.get_broadcast_variable("v"))
-        value[indices_V] = v_[indices_V]
-        return value
+class NormalizeVectorGroupReducer(GroupReduceFunction):
+    """
+    Normalizes a vector in (index, value) format.
+    """
+    def reduce(self, iterator, collector):
+        vector = np.take(sorted(iterator), 1, axis=1)
+        vector -= vector.mean()
+        vector /= sla.norm(vector)
+
+        return list(enumerate(vector))
 
 
-class DeflateMapper(MapFunction):
-    def map(self, row):
-        """
-        Deflates the data matrix by subtracting off the outer product of the
-        broadcasted vectors and returning the modified row.
-        """
-        k, vector = row
-        # It's important to keep order of operations in mind: we are computing
-        # (and subtracting from S) the outer product of u * v. As we are operating
-        # on a row-distributed matrix, we therefore will only iterate over the
-        # elements of v, and use the single element of u that corresponds to the
-        # index of the current row of S.
-        # Got all that? Good! Explain it to me.
-        u = np.array(self.context.get_broadcast_variable("_U_")[0])
-        v = np.array(self.context.get_broadcast_variable("_V_")[0])
-        return k, vector - (u[k] * v)
+class MagnitudeGroupReducer(GroupReduceFunction):
+    """
+    Calculates the magnitude of a vector.
+    """
+    def reduce(self, iterator, collector):
+        vector = np.take(sorted(iterator), 1, axis=1)
+        mag = sla.norm(vector)
+        with open('test-mag', mode='a') as f:
+            f.write(str(mag) + '\n')
+        collector.collect((0, mag))
+
+
+class DeltaGroupReducer(GroupReduceFunction):
+    """
+    Find the delta of two unioned data sets.
+    """
+    def reduce(self, iterator, collector):
+        elements = list(iterator)
+        with open('testing2', mode='a') as f:
+            f.write(str(elements) + '\n')
+        a = elements[0]
+        b = elements[1]
+        collector.collect((a[0], a[1] - b[1]))
+
+
+class SExploderGroupReducer(GroupReduceFunction):
+    def reduce(self, iterator, collector):
+        for x in iterator:
+            for y in enumerate(x[1]):
+                collector.collect((x[0], y[0], y[1]))
 
 
 if __name__ == "__main__":
@@ -221,7 +235,13 @@ if __name__ == "__main__":
 
     # Read the data and convert it into a thunder RowMatrix.
     raw_data = env.read_text(args['input'])
-    S = input_to_row_matrix(raw_data)
+
+    # Each of the following tuples: (row pos, vec pos, value)
+    S_orig = input_to_row_matrix(raw_data)
+    S = S_orig \
+        .reduce_group(SExploderGroupReducer()) \
+        .name('SExploderGroupReducer')
+
 
     ##################################################################
     # Here's where the real fun begins.
@@ -239,88 +259,129 @@ if __name__ == "__main__":
 
     epsilon = args['epsilon']  # convergence stopping criterion
     M = args['mDicatom']  # dimensionality of the learned dictionary
-    R = args['pnonzero'] * P  # enforces sparsity
-    u_new = np.zeros(T)  # atom updates at each iteration
-    v = np.zeros(P)
+    R = int(round(args['pnonzero'] * P))  # enforces sparsity
 
-    indices_V = np.zeros(R)  # for top-R sorting
+    ##################################################################
+    # Apparently Flink doesn't like np.arrays. So for vectors, we use Flink
+    # DataSets with indexes corresponding to their position in the vector.
+    ##################################################################
 
-    max_iterations = P * 10
+    u_new = env.from_elements(*[0 for t in range(T)])  # atom updates at each iteration
+    v = env.from_elements(*[0 for p in range(P)])
+
+    v_top_R = env.from_elements(*[0 for r in range(R)])  # for top-R sorting
+
+    max_iterations = int(P * 10)
     file_D = os.path.join(args['dictionary'], "{}_D.txt".format(args["prefix"]))
     file_z = os.path.join(args['output'], "{}_z.txt".format(args["prefix"]))
 
     # Start the loop!
     for m in range(M):
         # Generate a random vector, subtract off its mean, and normalize it.
-        u_old = np.random.random(T)
-        u_old -= u_old.mean()
-        u_old /= sla.norm(u_old)
-        # wrap in a DataSet so we can iterate and use a numpy vector
-        u_old_ds = env.from_elements((0, u_old))
-
-        u_old_ds_it = u_old_ds.iterate(max_iterations)
-        delta = 2 * epsilon
+        u_old = env.from_elements(0).flat_map(RandomVectorFlatMapper(T))
+        u_old_it = u_old.iterate(max_iterations)
 
         # Start the inner loop: this learns a single atom.
         # P2: Vector-matrix multiplication step. Computes v.
-        v = S \
-            .flat_map(VectorMatrixFlatMapper()) \
-            .with_broadcast_set("_U_", u_old_ds_it) \
-            .group_by(0) \
-            .aggregate(Sum, 0)
 
-        v_collapsed = env.from_elements(0).flat_map(NumpyCollapseFlatMapper()) \
-            .with_broadcast_set("data", v)
-        v_top_R = v_collapsed.map(lambda x: select_topr(x, R))
+        # We can't broadcast partial iteration results.
+        # This replaces vector_matrix in the original Spark implementation.
+        # flat map is replaced by group reduce functions because it doesn't seem to work with join etc.
+        S_orig = S_orig.map(lambda x: x)  # S_orig is null (?) without this
+        v = vector_matrix(u_old_it, S)  #.reduce_group(VectorMatrixGroupReducer()).with_broadcast_set('S_orig', S_orig)
+
+        # sort v by using sort_group after grouping on a dummy field
+        v = v.map(lambda x: (x[0], x[1], 0))
+        v = v \
+            .group_by(2).sort_group(1, Order.DESCENDING) \
+            .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
+            .name('VSorter')
+
+        v_top_R = v.first(R)
 
         # P1: Matrix-vector multiplication step. Computes u.
-        u_new = S \
-            .map(MatrixVectorMapper(R)) \
-            .with_broadcast_set("v_collapsed", v_collapsed) \
-            .with_broadcast_set("v_top", v_top_R)
+        # u_new = v_top_R.reduce_group(MatrixVectorGroupReducer()).with_broadcast_set('S_orig', S_orig)
 
-        u_new_collapsed = env.from_elements(0).flat_map(NumpyCollapseFlatMapper()) \
-            .with_broadcast_set("data", u_new)
-        u_new_collapsed = u_new_collapsed \
-            .map(lambda x: np.take(sorted(x), indices=1, axis=1))
+        # We can use a join to do a dot product.
+        # (S * v by row-wise multiplication)
+        # This replaces matrix_vector in the original Spark implementation.
+        # Multiply each corresponding element
+        u_new = v_top_R \
+            .join(S).where(0).equal_to(1) \
+            .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
+            .name('MatrixVector')
+
+        # Now, add up all the products to get the dot product result, and remove
+        # the vector position field (second field from the left)
+        u_new = u_new.group_by(0) \
+            .aggregate(Sum, 2) \
+            .map(lambda x: (x[0], x[2]))
+        ################################################################
 
         # Subtract off the mean and normalize.
-        u_new_collapsed = u_new_collapsed \
-            .map(lambda x: x - x.mean())
-        u_new_collapsed = u_new_collapsed \
-            .map(lambda x: x / sla.norm(x))
+        u_new = u_new.reduce_group(NormalizeVectorGroupReducer()).name('NormalizeVector')
 
-        u_new_collapsed = u_new_collapsed.zip_with_index()
+        # Update for the next iteration
+        # Join function does weird things here (ClassCastException?) so a union function is used as a workaround
+        # Find the difference between the two elements with the same index, since only magnitude (and not sign) matter
+        # todo check if this actually affects the number of iterations
+        # these operations don't exist (aren't processed???) D:
+        # delta = u_old_it.group_by(0) \        # delta = delta.reduce_group(MagnitudeGroupReducer()) \
+        #     .name('MagnitudeGroupReducer')
+        #     .reduce_group(DeltaGroupReducer()).name('DeltaGroupReducer')
+        # delta = delta.reduce_group(MagnitudeGroupReducer()) \
+        #     .name('MagnitudeGroupReducer')
+        # u_new = u_new.map(lambda x: x)
 
-        # Update for the next iteration.
-        delta = u_old_ds_it.join(u_new_collapsed).where(0).equal_to(0) \
-            .using(lambda old, new: new - old)
-        delta = delta.filter(lambda d: d > epsilon)
-        u_new_final = u_old_ds_it.close_with(u_new_collapsed, delta)
+        # delta = u_new.join(u_old_it).where(0).equal_to(0) \
+        #     .using(lambda new, old: (new[0], old[1] * new[1])).name('Delta Calculation') \
+        #     .group_by(0).aggregate(Sum, 1) \
+        #     .map(lambda x: (x[0], 1 - x[1]))
+        # TODO causes issues
+        delta = u_old_it.join(u_new).where(0).equal_to(0) \
+            .using(lambda old, new: (new[0], old[1] - new[1])).name('Delta Calculation')
+        delta = delta.reduce_group(MagnitudeGroupReducer()) \
+            .name('MagnitudeGroupReducer')
+        delta = delta.filter(lambda d: d[1] > epsilon)
+
+        u_new_final = u_old_it.close_with(u_new, delta)
 
         # Save the newly-computed u and v to the output files;
-        u_new_final_expanded = u_new_final.flat_map(lambda x, c: list(x))
-        u_new_final_expanded.write_csv(file_D+"."+str(m))
+        u_new_final.write_csv(file_D+"."+str(m), write_mode=WriteMode.OVERWRITE)
+        u_old.write_csv(file_D+"."+str(m)+"_OLD", write_mode=WriteMode.OVERWRITE)
 
-        temp_v = v_collapsed.map(lambda x: np.zeros(x.shape))
-        temp_v = temp_v.map(VFinalizerMapper()) \
-            .with_broadcast_set("v", v_collapsed)
-
-        v_collapsed = temp_v
-        v_expanded = v_collapsed.flat_map(lambda x, c: list(x))
-        v_expanded.write_csv(file_z+"."+str(m))
+        # TODO
+        # v = vector_matrix(u_new_final, S)
+        # temp_v = v.map(lambda x: (x[0], 0))
+        #
+        # # Add non-zero elements of v_top_R
+        # temp_v = temp_v.union(v/_top_R).group_by(0).aggregate(Sum, 1)
+        # v = temp_v
+        # v.write_csv(file_z+"."+str(m))
 
         # P4: Deflation step. Update the primary data matrix S.
+        # This replaces deflate in the original Spark implementation.
+        # We want k, vector - (u[k] * v) for each vector in the original data
+        # Our original data is formatted in tuples of (k, pos, value)
+        # First, we add u[k] to each tuple
         print m
-        S = S.map(DeflateMapper()).group_by(0).aggregate(Sum, 0) \
-            .with_broadcast_set("_U_", u_new_final) \
-            .with_broadcast_set("_V_", v_collapsed)
+        # TODO
+        # S = S.join(u_new_final).where(0).equal_to(0) \
+        #     .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1]))
+        #
+        # # Now, we multiply u[k] by v[pos] for each tuple
+        # S = S.join(v).where(1).equal_to(0) \
+        #     .using(lambda s_el, v_el: (s_el[0], s_el[1], s_el[2], s_el[3] * v_el[1]))
+        #
+        # # We calculate val - (u[r] * v[pos])
+        # S = S.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
+        #
+        # # Finally, add up everything
+        # S = S.group_by(0, 1).aggregate(Sum, 1)
+
         print str(m) + " done"
 
     env.execute(local=True)
 
     # All done! Write out the matrices as tab-delimited text files, with
     # floating-point values to 6 decimal-point precision.
-    print datetime.datetime.now()
-    process = psutil.Process(os.getpid())
-    print process.memory_info().rss
