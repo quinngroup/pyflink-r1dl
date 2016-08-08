@@ -10,6 +10,7 @@ import numpy as np
 import scipy.linalg as sla
 import datetime
 import os
+import math
 
 import sys
 from flink.functions.Aggregation import Sum
@@ -157,14 +158,25 @@ class RandomVectorFlatMapper(FlatMapFunction):
 
 class NormalizeVectorGroupReducer(GroupReduceFunction):
     """
-    Normalizes a vector in (index, value) format.
+    Normalizes a vector in (index, old, new_value) format.
     """
     def reduce(self, iterator, collector):
-        vector = np.take(sorted(iterator), 1, axis=1)
-        vector -= vector.mean()
-        vector /= sla.norm(vector)
+        data = list(iterator)
+        mean = 0
+        mag = 0
+        length = len(iterator)
 
-        return list(enumerate(vector))
+        for val in data:
+            mean += val[2]
+            mag += (val[2]) ** 2
+
+        mean /= length
+        mag = math.sqrt(mag)
+
+        for val in data:
+            val[2] -= mean
+            val[2] /= mag
+            collector.collect(val)
 
 
 class MagnitudeGroupReducer(GroupReduceFunction):
@@ -172,10 +184,10 @@ class MagnitudeGroupReducer(GroupReduceFunction):
     Calculates the magnitude of a vector.
     """
     def reduce(self, iterator, collector):
-        vector = np.take(sorted(iterator), 1, axis=1)
-        mag = sla.norm(vector)
-        with open('test-mag', mode='a') as f:
-            f.write(str(mag) + '\n')
+        mag = 0
+        for val in iterator:
+            mag += (val[1]) ** 2
+        mag = math.sqrt(mag)
         collector.collect((0, mag))
 
 
@@ -185,8 +197,6 @@ class DeltaGroupReducer(GroupReduceFunction):
     """
     def reduce(self, iterator, collector):
         elements = list(iterator)
-        with open('testing2', mode='a') as f:
-            f.write(str(elements) + '\n')
         a = elements[0]
         b = elements[1]
         collector.collect((a[0], a[1] - b[1]))
@@ -318,8 +328,13 @@ if __name__ == "__main__":
             .map(lambda x: (x[0], x[2]))
         ################################################################
 
-        # Subtract off the mean and normalize.
-        u_new = u_new.reduce_group(NormalizeVectorGroupReducer()).name('NormalizeVector')
+        # nullpointerexception
+        u_new_ = u_new.flat_map(lambda x, c: [x])
+        u_combined = u_new_.join(u_old_it).where(0).equal_to(0) \
+            .using(lambda new, old: (old[0], old[1], new[1]))
+
+        # Subtract off the mean and normalize
+        u_combined = u_combined.reduce_group(NormalizeVectorGroupReducer()).name('NormalizeVector')
 
         # Update for the next iteration
         # Join function does weird things here (ClassCastException?) so a union function is used as a workaround
@@ -337,9 +352,11 @@ if __name__ == "__main__":
         #     .using(lambda new, old: (new[0], old[1] * new[1])).name('Delta Calculation') \
         #     .group_by(0).aggregate(Sum, 1) \
         #     .map(lambda x: (x[0], 1 - x[1]))
+        # delta = u_old_it.join(u_new).where(0).equal_to(0) \
+        #     .using(lambda old, new: (new[0], old[1] - new[1])).name('Delta Calculation')
         # TODO causes issues
-        delta = u_old_it.join(u_new).where(0).equal_to(0) \
-            .using(lambda old, new: (new[0], old[1] - new[1])).name('Delta Calculation')
+
+        delta = u_combined.map(lambda x: (x[0], x[2] - x[1])).name('Delta Calculation')  # new - old
         delta = delta.reduce_group(MagnitudeGroupReducer()) \
             .name('MagnitudeGroupReducer')
         delta = delta.filter(lambda d: d[1] > epsilon)
