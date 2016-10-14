@@ -5,19 +5,16 @@
 import argparse
 
 import itertools
-
 import numpy as np
 import scipy.linalg as sla
 import datetime
 import os
 import math
 
-import sys
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.GroupReduceFunction import GroupReduceFunction
-from flink.functions.MapFunction import MapFunction
-from flink.plan.Constants import Order, WriteMode, INT, FLOAT
+from flink.plan.Constants import Order, WriteMode
 from flink.plan.Environment import get_environment
 
 
@@ -63,81 +60,42 @@ def parse_and_normalize(line):
     return x
 
 
-# def select_topr(vct_input, r):
-#     """
-#     Returns the R-th greatest elements indices
-#     in input vector and store them in idxs_n.
-#     Here, we're using this function instead of
-#     a complete sorting one, where it's more efficient
-#     than complete sorting function in real big data application
-#     parameters
-#     ----------
-#     vct_input : array, shape (T)
-#         indicating the input vector which is a
-#         vector we aimed to find the Rth greatest
-#         elements. After finding those elements we
-#         will store the indices of those specific
-#         elements in output vector.
-#     r : integer
-#         indicates Rth greatest elemnts which we
-#         are seeking for.
-#     Returns
-#     -------
-#     idxs_n : array, shape (R)
-#         a vector in which the Rth greatest elements
-#         indices will be stored and returned as major
-#         output of the function.
-#     """
-#     temp = np.argpartition(-vct_input, r)
-#     idxs_n = temp[:r]
-#     return idxs_n
+def get_top_v(r, u, s):
+    """
+    Calculates v, and then returns the top R elements of v
+    :param r: R
+    :param u: Old u
+    :param s: S matrix
+    :return: Top R elements of v
+    """
+    v = vector_matrix(u, s)
+
+    # sort v by using sort_group after grouping on a dummy field
+    v = v.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
+    v = v \
+        .group_by(2).sort_group(1, Order.DESCENDING) \
+        .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
+        .name('VSorter')
+
+    v_top_R = v.first(R).name('VFirst')
+    return v_top_R
 
 
 def vector_matrix(u__, S_):
     """
     Generates v using u.
     """
-    v = u__ \
+    v_ = u__ \
         .join(S_).where(0).equal_to(0) \
-        .using(lambda u_el, v_el: (v_el[1], v_el[2] * u_el[1])) \
+        .using(lambda u_el, s_el: (s_el[1], s_el[2] * u_el[1])) \
         .name('VectorMatrix')
 
-    v = v \
+    v_ = v_ \
         .group_by(0) \
-        .aggregate(Sum, 1)
+        .aggregate(Sum, 1) \
+        .name('VectorMatrixPost')
 
-    return v
-
-
-class VectorMatrixGroupReducer(GroupReduceFunction):
-    def reduce(self, iterator, collector):
-        S_original = self.context.get_broadcast_variable("S_orig")
-        iterator = np.array(sorted(iterator))
-        u__ = np.take(iterator, 1, axis=1)
-
-        for s in S_original:
-            k, vector = s
-            vector = np.array(vector)
-            for i in range(vector.shape[0]):
-                collector.collect((i, u__[k] * vector[i]))
-
-
-class MatrixVectorGroupReducer(GroupReduceFunction):
-    """
-    Applies S * v by row-wise multiplication. No reduction needed, as all the
-    summations are performed within this very function.
-    """
-    def reduce(self, iterator, collector):
-        S_original = self.context.get_broadcast_variable("S_orig")
-        iterator = np.array(sorted(iterator))
-        i__ = np.take(iterator, 0, axis=1).astype(int)
-        v__ = np.take(iterator, 1, axis=1)
-
-        for s in S_original:
-            k, vector = s
-            vector = np.array(vector)
-            innerprod = np.dot(vector[i__], v__)
-            collector.collect((k, innerprod))
+    return v_
 
 
 class RandomVectorFlatMapper(FlatMapFunction):
@@ -191,17 +149,6 @@ class MagnitudeGroupReducer(GroupReduceFunction):
         collector.collect((0, mag))
 
 
-class DeltaGroupReducer(GroupReduceFunction):
-    """
-    Find the delta of two unioned data sets.
-    """
-    def reduce(self, iterator, collector):
-        elements = list(iterator)
-        a = elements[0]
-        b = elements[1]
-        collector.collect((a[0], a[1] - b[1]))
-
-
 class SExploderGroupReducer(GroupReduceFunction):
     def reduce(self, iterator, collector):
         for x in iterator:
@@ -225,17 +172,19 @@ if __name__ == "__main__":
                         help="Number of columns (features) in the input matrix S.")
     parser.add_argument("-r", "--pnonzero", type=float, required=True,
                         help="Percentage of non-zero elements.")
-    parser.add_argument("-m", "--mDicatom", type=int, required=True,
+    parser.add_argument("-m", "--mdicatom", type=int, required=True,
                         help="Number of the dictionary atoms.")
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
+    parser.add_argument("-z", "--seed", type=long, required=False,
+                        help="Random seed. (optional)")
 
     # Outputs.
     parser.add_argument("-d", "--dictionary", required=True,
                         help="Output path to dictionary file.(file_D)")
     parser.add_argument("-o", "--output", required=True,
                         help="Output path to z matrix.(file_z)")
-    parser.add_argument("-prefix", "--prefix", required=True,
+    parser.add_argument("-x", "--prefix", required=True,
                         help="Prefix strings to the output files")
 
     args = vars(parser.parse_args())
@@ -243,15 +192,14 @@ if __name__ == "__main__":
     # Initialize the Flink environment.
     env = get_environment()
 
-    # Read the data and convert it into a thunder RowMatrix.
+    # Read the data and convert it into a data set of lines
     raw_data = env.read_text(args['input'])
 
-    # Each of the following tuples: (row pos, vec pos, value)
+    # Convert each line to a tuple: (row number, vec pos, value)
     S_orig = input_to_row_matrix(raw_data)
     S = S_orig \
         .reduce_group(SExploderGroupReducer()) \
         .name('SExploderGroupReducer')
-
 
     ##################################################################
     # Here's where the real fun begins.
@@ -268,7 +216,7 @@ if __name__ == "__main__":
     P = args['cols']
 
     epsilon = args['epsilon']  # convergence stopping criterion
-    M = args['mDicatom']  # dimensionality of the learned dictionary
+    M = args['mdicatom']  # dimensionality of the learned dictionary
     R = int(round(args['pnonzero'] * P))  # enforces sparsity
 
     ##################################################################
@@ -276,11 +224,7 @@ if __name__ == "__main__":
     # DataSets with indexes corresponding to their position in the vector.
     ##################################################################
 
-    u_new = env.from_elements(*[0 for t in range(T)])  # atom updates at each iteration
-    v = env.from_elements(*[0 for p in range(P)])
-
-    v_top_R = env.from_elements(*[0 for r in range(R)])  # for top-R sorting
-
+    # Information we need.
     max_iterations = int(P * 10)
     file_D = os.path.join(args['dictionary'], "{}_D.txt".format(args["prefix"]))
     file_z = os.path.join(args['output'], "{}_z.txt".format(args["prefix"]))
@@ -288,34 +232,24 @@ if __name__ == "__main__":
     # Start the loop!
     for m in range(M):
         # Generate a random vector, subtract off its mean, and normalize it.
+        # TODO get rid of numpy entirely?
         u_old = env.from_elements(0).flat_map(RandomVectorFlatMapper(T))
         u_old_it = u_old.iterate(max_iterations)
 
         # Start the inner loop: this learns a single atom.
         # P2: Vector-matrix multiplication step. Computes v.
 
-        # We can't broadcast partial iteration results.
-        # This replaces vector_matrix in the original Spark implementation.
-        # flat map is replaced by group reduce functions because it doesn't seem to work with join etc.
-        v = vector_matrix(u_old_it, S)  #.reduce_group(VectorMatrixGroupReducer()).with_broadcast_set('S_orig', S_orig)
-
-        # sort v by using sort_group after grouping on a dummy field
-        v = v.map(lambda x: (x[0], x[1], 0))
-        v = v \
-            .group_by(2).sort_group(1, Order.DESCENDING) \
-            .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
-            .name('VSorter')
-
-        v_top_R = v.first(R)
+        # We can't broadcast partial iteration results, so
+        # the Flink implementation is different from Spark.
+        v = get_top_v(R, u_old_it, S)
 
         # P1: Matrix-vector multiplication step. Computes u.
-        # u_new = v_top_R.reduce_group(MatrixVectorGroupReducer()).with_broadcast_set('S_orig', S_orig)
 
         # We can use a join to do a dot product.
         # (S * v by row-wise multiplication)
         # This replaces matrix_vector in the original Spark implementation.
         # Multiply each corresponding element
-        u_new = v_top_R \
+        u_new = v \
             .join(S).where(0).equal_to(1) \
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
             .name('MatrixVector')
@@ -340,40 +274,34 @@ if __name__ == "__main__":
 
         # Save the newly-computed u and v to the output files;
         u_new_final.write_csv(file_D+"."+str(m), write_mode=WriteMode.OVERWRITE)
-        u_old.write_csv(file_D+"."+str(m)+"_OLD", write_mode=WriteMode.OVERWRITE)
 
-        # TODO
-        # v = vector_matrix(u_new_final, S)
-        # temp_v = v.map(lambda x: (x[0], 0))
-        #
-        # # Add non-zero elements of v_top_R
-        # temp_v = temp_v.union(v/_top_R).group_by(0).aggregate(Sum, 1)
-        # v = temp_v
-        # v.write_csv(file_z+"."+str(m))
+        # Compute new v from final u
+        v_final = get_top_v(R, u_new_final, S)
+
+        # Fill in missing spots with zeroes
+        v_zeroes = env.from_elements(*[(t, 0) for t in range(T)])
+        v_final = v_final.union(v_zeroes)
+        v_final = v_final.group_by(0).aggregate(Sum, 1)
+        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE)
 
         # P4: Deflation step. Update the primary data matrix S.
         # This replaces deflate in the original Spark implementation.
         # We want k, vector - (u[k] * v) for each vector in the original data
         # Our original data is formatted in tuples of (k, pos, value)
         # First, we add u[k] to each tuple
-        print m
-        # TODO
-        # S = S.join(u_new_final).where(0).equal_to(0) \
-        #     .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1]))
-        #
-        # # Now, we multiply u[k] by v[pos] for each tuple
-        # S = S.join(v).where(1).equal_to(0) \
-        #     .using(lambda s_el, v_el: (s_el[0], s_el[1], s_el[2], s_el[3] * v_el[1]))
-        #
-        # # We calculate val - (u[r] * v[pos])
-        # S = S.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
-        #
-        # # Finally, add up everything
-        # S = S.group_by(0, 1).aggregate(Sum, 1)
+        S_temp = S.join(u_new_final).where(0).equal_to(0) \
+            .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1]))
 
-        print str(m) + " done"
+        # Now, we multiply u[k] by v[pos] for each tuple
+        S_temp = S_temp.join(v).where(1).equal_to(0) \
+            .using(lambda s_el, v_el: (s_el[0], s_el[1], s_el[2], s_el[3] * v_el[1]))
+
+        # We calculate val - (u[r] * v[pos])
+        S_temp = S_temp.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
+
+        # Finally, add up everything
+        S = S_temp.group_by(0, 1).aggregate(Sum, 1)
 
     env.execute(local=True)
 
-    # All done! Write out the matrices as tab-delimited text files, with
-    # floating-point values to 6 decimal-point precision.
+    # All done! Write out the matrices as text files.
