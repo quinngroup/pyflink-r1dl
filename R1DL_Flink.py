@@ -5,36 +5,20 @@
 import argparse
 
 import itertools
+import random
+
 import numpy as np
 import scipy.linalg as sla
 import datetime
 import os
 import math
 
+import sys
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.GroupReduceFunction import GroupReduceFunction
 from flink.plan.Constants import Order, WriteMode
 from flink.plan.Environment import get_environment
-
-
-###################################
-# Utility functions
-###################################
-
-def input_to_row_matrix(raw):
-    """
-    Utility function for reading the matrix data
-    """
-    # Parse each line of the input into a numpy array of floats. This requires
-    # several steps.
-    #  1: Split each string into a list of strings.
-    #  2: Convert each string to a float.
-    #  3: Convert each list to a numpy array.
-    data = raw \
-        .zip_with_index() \
-        .map(lambda x: (x[0], parse_and_normalize(x[1])))
-    return data
 
 
 ###################################
@@ -60,6 +44,14 @@ def parse_and_normalize(line):
     return x
 
 
+class SExploderGroupReducer(GroupReduceFunction):
+    def reduce(self, iterator, collector):
+        for x in iterator:
+            data = enumerate(parse_and_normalize(x[1]))
+            for y in data:
+                collector.collect((x[0], y[0], y[1]))
+
+
 def get_top_v(r, u, s):
     """
     Calculates v, and then returns the top R elements of v
@@ -68,17 +60,17 @@ def get_top_v(r, u, s):
     :param s: S matrix
     :return: Top R elements of v
     """
-    v = vector_matrix(u, s)
+    v_ = vector_matrix(u, s)
 
     # sort v by using sort_group after grouping on a dummy field
-    v = v.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
-    v = v \
+    v_ = v_.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
+    v_ = v_ \
         .group_by(2).sort_group(1, Order.DESCENDING) \
         .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
         .name('VSorter')
 
-    v_top_R = v.first(R).name('VFirst')
-    return v_top_R
+    v_top_R_ = v_.first(r).name('VFirst')
+    return v_top_R_
 
 
 def vector_matrix(u__, S_):
@@ -100,23 +92,21 @@ def vector_matrix(u__, S_):
 
 class RandomVectorFlatMapper(FlatMapFunction):
     """
-    Takes a DataSet and replaces a single placeholder element with the elements
-    of a numpy.random.random vector.
+    Takes a DataSet and replaces a single placeholder element with random numbers in [0.0, 1.0).
+    Does NOT normalize.
     """
     def __init__(self, t_):
         self.T = t_
         super(RandomVectorFlatMapper, self).__init__()
 
     def flat_map(self, value, collector):
-        vec = np.random.random(self.T)
-        vec -= vec.mean()
-        vec /= sla.norm(vec)
+        vec = [random.random() for i in range(self.T)]
         return list(enumerate(vec))
 
 
 class NormalizeVectorGroupReducer(GroupReduceFunction):
     """
-    Normalizes a vector in (index, old, new_value) format.
+    Normalizes a vector in (index, value) format.
     """
     def reduce(self, iterator, collector):
         data = list(iterator)
@@ -147,13 +137,6 @@ class MagnitudeGroupReducer(GroupReduceFunction):
             mag += (val[1]) ** 2
         mag = math.sqrt(mag)
         collector.collect((0, mag))
-
-
-class SExploderGroupReducer(GroupReduceFunction):
-    def reduce(self, iterator, collector):
-        for x in iterator:
-            for y in enumerate(x[1]):
-                collector.collect((x[0], y[0], y[1]))
 
 
 if __name__ == "__main__":
@@ -196,8 +179,9 @@ if __name__ == "__main__":
     raw_data = env.read_text(args['input'])
 
     # Convert each line to a tuple: (row number, vec pos, value)
-    S_orig = input_to_row_matrix(raw_data)
-    S = S_orig \
+    #S_orig = input_to_row_matrix(raw_data)
+    S = raw_data \
+        .zip_with_index() \
         .reduce_group(SExploderGroupReducer()) \
         .name('SExploderGroupReducer')
 
@@ -212,12 +196,29 @@ if __name__ == "__main__":
     # Sound like fun?
     ##################################################################
 
+    # Print out some useful information for the user
+    print '=================================================================================='
+    print 'Flictionary learning: R1DL in Flink!'
+
     T = args['rows']
     P = args['cols']
+
+    print 'Input has {rows} rows and {cols} cols.'.format(**args)
 
     epsilon = args['epsilon']  # convergence stopping criterion
     M = args['mdicatom']  # dimensionality of the learned dictionary
     R = int(round(args['pnonzero'] * P))  # enforces sparsity
+
+    args['R'] = R
+    print 'epsilon = {epsilon}, M = {mdicatom}, R = {R}'.format(**args)
+
+    # seed random number generator
+    if args['seed'] is not None:
+        random.seed(args['seed'])
+        print 'Using random seed {seed}.'.format(**args)\
+
+    print '=================================================================================='
+    sys.stdout.flush()
 
     ##################################################################
     # Apparently Flink doesn't like np.arrays. So for vectors, we use Flink
@@ -232,8 +233,9 @@ if __name__ == "__main__":
     # Start the loop!
     for m in range(M):
         # Generate a random vector, subtract off its mean, and normalize it.
-        # TODO get rid of numpy entirely?
-        u_old = env.from_elements(0).flat_map(RandomVectorFlatMapper(T))
+        u_old = env.from_elements(0).flat_map(RandomVectorFlatMapper(T)) \
+            .reduce_group(NormalizeVectorGroupReducer()) \
+            .name('Random u')
         u_old_it = u_old.iterate(max_iterations)
 
         # Start the inner loop: this learns a single atom.
@@ -293,7 +295,7 @@ if __name__ == "__main__":
             .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1]))
 
         # Now, we multiply u[k] by v[pos] for each tuple
-        S_temp = S_temp.join(v).where(1).equal_to(0) \
+        S_temp = S_temp.join(v_final).where(1).equal_to(0) \
             .using(lambda s_el, v_el: (s_el[0], s_el[1], s_el[2], s_el[3] * v_el[1]))
 
         # We calculate val - (u[r] * v[pos])
