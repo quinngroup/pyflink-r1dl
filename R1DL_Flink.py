@@ -146,6 +146,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Flictionary Learning', add_help='How to use',
                                      prog='.../pyflink2.sh R1DL_Flink.py - <args>')
 
+    parser.add_argument("-l", "--local", action='store_true',
+                        help="Run script on the local machine i.e. NOT a cluster. (optional)")
+
     # Inputs.
     parser.add_argument("-i", "--input", required=True,
                         help="Input file containing the matrix S.")
@@ -199,6 +202,7 @@ if __name__ == "__main__":
     # Print out some useful information for the user
     print '=================================================================================='
     print 'Flictionary learning: R1DL in Flink!'
+    print 'Local mode: {local}'.format(**args)
 
     T = args['rows']
     P = args['cols']
@@ -304,6 +308,6 @@ if __name__ == "__main__":
         # Finally, add up everything
         S = S_temp.group_by(0, 1).aggregate(Sum, 1)
 
-    env.execute(local=True)
+    env.execute(local=args['local'])
 
     # All done! Write out the matrices as text files.
