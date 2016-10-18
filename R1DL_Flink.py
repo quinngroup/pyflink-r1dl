@@ -3,16 +3,11 @@
 # Probably PEP 8 compliant.
 
 import argparse
-
 import itertools
 import random
-
-import numpy as np
-import scipy.linalg as sla
 import datetime
 import os
 import math
-
 import sys
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
@@ -144,7 +139,7 @@ if __name__ == "__main__":
     print datetime.datetime.now()
 
     parser = argparse.ArgumentParser(description='Flictionary Learning', add_help='How to use',
-                                     prog='.../pyflink2.sh R1DL_Flink.py - <args>')
+                                     prog='.../pyflink2.sh R1DL_Flink.py -')
 
     parser.add_argument("-l", "--local", action='store_true',
                         help="Run script on the local machine i.e. NOT a cluster. (optional)")
@@ -167,9 +162,9 @@ if __name__ == "__main__":
 
     # Outputs.
     parser.add_argument("-d", "--dictionary", required=True,
-                        help="Output path to dictionary file.(file_D)")
+                        help="Output path to dictionary file. (file_D)")
     parser.add_argument("-o", "--output", required=True,
-                        help="Output path to z matrix.(file_z)")
+                        help="Output path to z matrix. (file_z)")
     parser.add_argument("-x", "--prefix", required=True,
                         help="Prefix strings to the output files")
 
@@ -182,7 +177,6 @@ if __name__ == "__main__":
     raw_data = env.read_text(args['input'])
 
     # Convert each line to a tuple: (row number, vec pos, value)
-    #S_orig = input_to_row_matrix(raw_data)
     S = raw_data \
         .zip_with_index() \
         .reduce_group(SExploderGroupReducer()) \
@@ -219,7 +213,7 @@ if __name__ == "__main__":
     # seed random number generator
     if args['seed'] is not None:
         random.seed(args['seed'])
-        print 'Using random seed {seed}.'.format(**args)\
+        print 'Using random seed {seed}.'.format(**args)
 
     print '=================================================================================='
     sys.stdout.flush()
