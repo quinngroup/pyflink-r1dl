@@ -3,12 +3,11 @@
 # Probably PEP 8 compliant.
 
 import argparse
-import itertools
-import random
-import datetime
-import os
 import math
+import os
+import random
 import sys
+
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.GroupReduceFunction import GroupReduceFunction
@@ -135,9 +134,6 @@ class MagnitudeGroupReducer(GroupReduceFunction):
 
 
 if __name__ == "__main__":
-
-    print datetime.datetime.now()
-
     parser = argparse.ArgumentParser(description='Flictionary Learning', add_help='How to use',
                                      prog='.../pyflink2.sh R1DL_Flink.py -')
 
