@@ -24,18 +24,7 @@ def parse_and_normalize(line):
     Utility function. Parses a line of text into a floating point array, then
     whitens the array.
     """
-    x = tuple(map(float, line.strip().split()))
-
-    # x.strip() -- strips off trailing whitespace from the string
-    # .split("\t") -- splits the string into a list of strings, splitting on tabs
-    # map(float, list) -- converts each element of the list from strings to floats
-    # np.array(list) -- converts the list of floats into a numpy array
-
-    # comment by Xiang: the following normalization commands work for vector u,
-    # but not work here. I have double-checked it with pre-normalized matrix;
-    # x -= x.mean()  # 0-mean.
-    # x /= sla.norm(x)  # Unit norm.
-    return x
+    return tuple(map(float, line.strip().split()))
 
 
 class SExploderGroupReducer(GroupReduceFunction):
@@ -72,7 +61,7 @@ def vector_matrix(u__, S_):
     Generates v using u.
     """
     v_ = u__ \
-        .join(S_).where(0).equal_to(0) \
+        .join_with_huge(S_).where(0).equal_to(0) \
         .using(lambda u_el, s_el: (s_el[1], s_el[2] * u_el[1])) \
         .name('VectorMatrix')
 
@@ -166,18 +155,6 @@ if __name__ == "__main__":
 
     args = vars(parser.parse_args())
 
-    # Initialize the Flink environment.
-    env = get_environment()
-
-    # Read the data and convert it into a data set of lines
-    raw_data = env.read_text(args['input'])
-
-    # Convert each line to a tuple: (row number, vec pos, value)
-    S = raw_data \
-        .zip_with_index() \
-        .reduce_group(SExploderGroupReducer()) \
-        .name('SExploderGroupReducer')
-
     ##################################################################
     # Here's where the real fun begins.
     #
@@ -224,6 +201,18 @@ if __name__ == "__main__":
     file_D = os.path.join(args['dictionary'], "{}_D.txt".format(args["prefix"]))
     file_z = os.path.join(args['output'], "{}_z.txt".format(args["prefix"]))
 
+    # Initialize the Flink environment.
+    env = get_environment()
+
+    # Read the data and convert it into a data set of lines
+    raw_data = env.read_text(args['input'])
+
+    # Convert each line to a tuple: (row number, vec pos, value)
+    S = raw_data \
+        .zip_with_index() \
+        .reduce_group(SExploderGroupReducer()) \
+        .name('SExploderGroupReducer')
+
     # Start the loop!
     for m in range(M):
         # Generate a random vector, subtract off its mean, and normalize it.
@@ -246,7 +235,7 @@ if __name__ == "__main__":
         # This replaces matrix_vector in the original Spark implementation.
         # Multiply each corresponding element
         u_new = v \
-            .join(S).where(0).equal_to(1) \
+            .join_with_huge(S).where(0).equal_to(1) \
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
             .name('MatrixVector')
 
@@ -260,7 +249,7 @@ if __name__ == "__main__":
         u_new = u_new.reduce_group(NormalizeVectorGroupReducer()).name('NormalizeVector')
 
         # Update for the next iteration
-        delta = u_new.join(u_old_it).where(0).equal_to(0) \
+        delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
             .using(lambda new, old: (new[0], old[1] - new[1]))
         delta = delta.reduce_group(MagnitudeGroupReducer()) \
             .name('MagnitudeGroupReducer')
