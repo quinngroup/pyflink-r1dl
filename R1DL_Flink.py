@@ -87,14 +87,22 @@ class RandomVectorFlatMapper(FlatMapFunction):
         return list(enumerate(vec))
 
 
+def random_vector(num_elements, rng=None):
+    """Generates a vector of random numbers. Does NOT normalize."""
+    if rng is None: rng = random
+    dataset = env.generate_sequence(1, num_elements).zip_with_index()
+    dataset = dataset.map(lambda x: (x[0], rng.random()))
+    return dataset
+
+
 class NormalizeVectorGroupReducer(GroupReduceFunction):
     """
     Normalizes a vector in (index, value) format.
     """
     def reduce(self, iterator, collector):
         data = list(iterator)
-        mean = 0
-        mag = 0
+        mean = 0.0
+        mag = 0.0
         length = len(data)
 
         for val in data:
@@ -122,12 +130,30 @@ class MagnitudeGroupReducer(GroupReduceFunction):
         collector.collect((0, mag))
 
 
+def initialize_rng(seed=None, java=False):
+    rng = None
+    if java:
+        import javarandom
+        rng = javarandom.Random(seed)
+        rng.random = rng.nextDouble  # shim
+    else:
+        rng = random.Random(seed)
+    return rng
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Flictionary Learning', add_help='How to use',
                                      prog='.../pyflink2.sh R1DL_Flink.py -')
 
+    parser.add_argument("-q", "--quiet", action='store_true',
+                        help="Don't print out any verbose information. Note that this doesn't "
+                             "cover the output from Flink itself. (optional)")
     parser.add_argument("-l", "--local", action='store_true',
                         help="Run script on the local machine i.e. NOT a cluster. (optional)")
+    parser.add_argument("-j", "--javarand", action='store_true',
+                        help="Use an implementation of the Java RNG. This option allows you to "
+                             "directly compare results between the Java and Python implementations. "
+                             "Requires java-random package. (optional)")
 
     # Inputs.
     parser.add_argument("-i", "--input", required=True,
@@ -143,7 +169,9 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
     parser.add_argument("-z", "--seed", type=long, required=False,
-                        help="Random seed. (optional)")
+                        help="Random seed. NOTE that because of the nature of the Python API, if "
+                             "seed is specified, every random u vector will have the same random "
+                             "numbers! (optional)")
 
     # Outputs.
     parser.add_argument("-d", "--dictionary", required=True,
@@ -166,30 +194,31 @@ if __name__ == "__main__":
     # Sound like fun?
     ##################################################################
 
-    # Print out some useful information for the user
-    print '=================================================================================='
-    print 'Flictionary learning: R1DL in Flink!'
-    print 'Local mode: {local}'.format(**args)
-
     T = args['rows']
     P = args['cols']
-
-    print 'Input has {rows} rows and {cols} cols.'.format(**args)
-
     epsilon = args['epsilon']  # convergence stopping criterion
     M = args['mdicatom']  # dimensionality of the learned dictionary
     R = int(round(args['pnonzero'] * P))  # enforces sparsity
 
-    args['R'] = R
-    print 'epsilon = {epsilon}, M = {mdicatom}, R = {R}'.format(**args)
-
     # seed random number generator
-    if args['seed'] is not None:
-        random.seed(args['seed'])
-        print 'Using random seed {seed}.'.format(**args)
+    rng = initialize_rng(args['seed'], args['javarand'])
 
-    print '=================================================================================='
-    sys.stdout.flush()
+    # Print out some useful information for the user
+    if not args['quiet']:
+        print '=================================================================================='
+        print 'Flictionary learning: R1DL in Flink!'
+        print 'Local mode: {local}'.format(**args)
+        print 'Input has {rows} rows and {cols} cols.'.format(**args)
+        args['R'] = R
+        print 'epsilon = {epsilon}, M = {mdicatom}, R = {R}'.format(**args)
+
+        if args['javarand']:
+            print 'Using java-random.'
+        if args['seed'] is not None:
+            print 'Using random seed {seed}.'.format(**args)
+
+        print '=================================================================================='
+        sys.stdout.flush()
 
     ##################################################################
     # Apparently Flink doesn't like np.arrays. So for vectors, we use Flink
@@ -216,8 +245,8 @@ if __name__ == "__main__":
     # Start the loop!
     for m in range(M):
         # Generate a random vector, subtract off its mean, and normalize it.
-        u_old = env.from_elements(0).flat_map(RandomVectorFlatMapper(T)) \
-            .reduce_group(NormalizeVectorGroupReducer()) \
+        u_old = random_vector(T, rng)
+        u_old = u_old.reduce_group(NormalizeVectorGroupReducer()) \
             .name('Random u')
         u_old_it = u_old.iterate(max_iterations)
 
@@ -264,7 +293,8 @@ if __name__ == "__main__":
         v_final = get_top_v(R, u_new_final, S)
 
         # Fill in missing spots with zeroes
-        v_zeroes = env.from_elements(*[(t, 0) for t in range(T)])
+        # Fill with 0.0, not 0 or else Flink thinks these are LONGS and NOT doubles!
+        v_zeroes = env.from_elements(*[(t, 0.0) for t in range(T)])
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1)
         v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE)
