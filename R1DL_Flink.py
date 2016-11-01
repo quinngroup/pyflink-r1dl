@@ -27,12 +27,11 @@ def parse_and_normalize(line):
     return tuple(map(float, line.strip().split()))
 
 
-class SExploderGroupReducer(GroupReduceFunction):
-    def reduce(self, iterator, collector):
-        for x in iterator:
-            data = enumerate(parse_and_normalize(x[1]))
-            for y in data:
-                collector.collect((x[0], y[0], y[1]))
+class SExploderFlatMapper(FlatMapFunction):
+    def flat_map(self, x, collector):
+        data = enumerate(parse_and_normalize(x[1]))
+        for y in data:
+            collector.collect((x[0], y[0], y[1]))
 
 
 def get_top_v(r, u, s):
@@ -239,8 +238,8 @@ if __name__ == "__main__":
     # Convert each line to a tuple: (row number, vec pos, value)
     S = raw_data \
         .zip_with_index() \
-        .reduce_group(SExploderGroupReducer()) \
-        .name('SExploderGroupReducer')
+        .reduce_group(SExploderFlatMapper()) \
+        .name('SExploderFlatMapper')
 
     # Start the loop!
     for m in range(M):
