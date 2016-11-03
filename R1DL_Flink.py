@@ -167,7 +167,7 @@ if __name__ == "__main__":
                         help="Number of the dictionary atoms.")
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
-    parser.add_argument("-z", "--seed", type=long, required=False,
+    parser.add_argument("-z", "--seed", type=int, required=False,
                         help="Random seed. NOTE that because of the nature of the Python API, if "
                              "seed is specified, every random u vector will have the same random "
                              "numbers! (optional)")
@@ -204,19 +204,19 @@ if __name__ == "__main__":
 
     # Print out some useful information for the user
     if not args['quiet']:
-        print '=================================================================================='
-        print 'Flictionary learning: R1DL in Flink!'
-        print 'Local mode: {local}'.format(**args)
-        print 'Input has {rows} rows and {cols} cols.'.format(**args)
+        print('==================================================================================')
+        print('Flictionary learning: R1DL in Flink!')
+        print('Local mode: {local}'.format(**args))
+        print('Input has {rows} rows and {cols} cols.'.format(**args))
         args['R'] = R
-        print 'epsilon = {epsilon}, M = {mdicatom}, R = {R}'.format(**args)
+        print('epsilon = {epsilon}, M = {mdicatom}, R = {R}'.format(**args))
 
         if args['javarand']:
-            print 'Using java-random.'
+            print('Using java-random.')
         if args['seed'] is not None:
-            print 'Using random seed {seed}.'.format(**args)
+            print('Using random seed {seed}.'.format(**args))
 
-        print '=================================================================================='
+        print('==================================================================================')
         sys.stdout.flush()
 
     ##################################################################
