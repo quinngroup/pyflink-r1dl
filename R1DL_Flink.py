@@ -74,8 +74,8 @@ def vector_matrix(u__, S_):
 
 class RandomVectorFlatMapper(FlatMapFunction):
     """
-    Takes a DataSet and replaces a single placeholder element with random numbers in [0.0, 1.0).
-    Does NOT normalize.
+    Takes a DataSet and replaces a single placeholder element with random
+    numbers in [0.0, 1.0). Does NOT normalize.
     """
     def __init__(self, t_):
         self.T = t_
@@ -86,9 +86,8 @@ class RandomVectorFlatMapper(FlatMapFunction):
         return list(enumerate(vec))
 
 
-def random_vector(num_elements, rng=None):
+def random_vector(num_elements, rng=random):
     """Generates a vector of random numbers. Does NOT normalize."""
-    if rng is None: rng = random
     dataset = env.generate_sequence(1, num_elements).zip_with_index()
     dataset = dataset.map(lambda x: (x[0], rng.random()))
     return dataset
@@ -141,26 +140,33 @@ def initialize_rng(seed=None, java=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Flictionary Learning', add_help='How to use',
+    parser = argparse.ArgumentParser(description='Flictionary Learning',
+                                     add_help='How to use',
                                      prog='.../pyflink2.sh R1DL_Flink.py -')
 
     parser.add_argument("-q", "--quiet", action='store_true',
-                        help="Don't print out any verbose information. Note that this doesn't "
-                             "cover the output from Flink itself. (optional)")
+                        help="Don't print out any verbose information. "
+                             "Note that this doesn't cover the output from "
+                             "Flink itself. (optional)")
     parser.add_argument("-l", "--local", action='store_true',
-                        help="Run script on the local machine i.e. NOT a cluster. (optional)")
+                        help="Run script on the local machine "
+                             "i.e. NOT a cluster. (optional)")
     parser.add_argument("-j", "--javarand", action='store_true',
-                        help="Use an implementation of the Java RNG. This option allows you to "
-                             "directly compare results between the Java and Python implementations. "
-                             "Requires java-random package. (optional)")
+                        help="Use an implementation of the Java RNG. "
+                             "This option allows you to directly compare "
+                             "results between the Java and Python "
+                             "implementations. Requires java-random package. "
+                             "(optional)")
 
     # Inputs.
     parser.add_argument("-i", "--input", required=True,
                         help="Input file containing the matrix S.")
     parser.add_argument("-t", "--rows", type=int, required=True,
-                        help="Number of rows (observations) in the input matrix S.")
+                        help="Number of rows (observations) in the "
+                             "input matrix S.")
     parser.add_argument("-p", "--cols", type=int, required=True,
-                        help="Number of columns (features) in the input matrix S.")
+                        help="Number of columns (features) in the "
+                             "input matrix S.")
     parser.add_argument("-r", "--pnonzero", type=float, required=True,
                         help="Percentage of non-zero elements.")
     parser.add_argument("-m", "--mdicatom", type=int, required=True,
@@ -168,8 +174,9 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
     parser.add_argument("-z", "--seed", type=int, required=False,
-                        help="Random seed. NOTE that because of the nature of the Python API, if "
-                             "seed is specified, every random u vector will have the same random "
+                        help="Random seed. NOTE that because of the nature of "
+                             "the Python API, if seed is specified, every "
+                             "random u vector will have the same random "
                              "numbers! (optional)")
 
     # Outputs.
@@ -204,7 +211,7 @@ if __name__ == "__main__":
 
     # Print out some useful information for the user
     if not args['quiet']:
-        print('==================================================================================')
+        print('====================')
         print('Flictionary learning: R1DL in Flink!')
         print('Local mode: {local}'.format(**args))
         print('Input has {rows} rows and {cols} cols.'.format(**args))
@@ -216,7 +223,7 @@ if __name__ == "__main__":
         if args['seed'] is not None:
             print('Using random seed {seed}.'.format(**args))
 
-        print('==================================================================================')
+        print('====================')
         sys.stdout.flush()
 
     ##################################################################
@@ -226,8 +233,8 @@ if __name__ == "__main__":
 
     # Information we need.
     max_iterations = int(P * 10)
-    file_D = os.path.join(args['dictionary'], "{}_D.txt".format(args["prefix"]))
-    file_z = os.path.join(args['output'], "{}_z.txt".format(args["prefix"]))
+    file_D = os.path.join(args['dictionary'], "{prefix}_D.txt".format(**args))
+    file_z = os.path.join(args['output'], "{prefix}_z.txt".format(**args))
 
     # Initialize the Flink environment.
     env = get_environment()
@@ -267,14 +274,15 @@ if __name__ == "__main__":
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
             .name('MatrixVector')
 
-        # Now, add up all the products to get the dot product result, and remove
-        # the vector position field (second field from the left)
+        # Now, add up all the products to get the dot product result,
+        # and remove the vector position field (second field from the left)
         u_new = u_new.group_by(0) \
             .aggregate(Sum, 2) \
             .map(lambda x: (x[0], x[2]))
         ################################################################
 
-        u_new = u_new.reduce_group(NormalizeVectorGroupReducer()).name('NormalizeVector')
+        u_new = u_new.reduce_group(NormalizeVectorGroupReducer())\
+            .name('NormalizeVector')
 
         # Update for the next iteration
         delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
@@ -286,13 +294,15 @@ if __name__ == "__main__":
         u_new_final = u_old_it.close_with(u_new, delta)
 
         # Save the newly-computed u and v to the output files;
-        u_new_final.write_csv(file_D+"."+str(m), write_mode=WriteMode.OVERWRITE)
+        u_new_final.write_csv(file_D+"."+str(m),
+                              write_mode=WriteMode.OVERWRITE)
 
         # Compute new v from final u
         v_final = get_top_v(R, u_new_final, S)
 
         # Fill in missing spots with zeroes
-        # Fill with 0.0, not 0 or else Flink thinks these are LONGS and NOT doubles!
+        # Fill with 0.0, not 0 or else Flink thinks these are
+        # ONGS and NOT doubles!
         v_zeroes = env.from_elements(*[(t, 0.0) for t in range(T)])
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1)
@@ -308,7 +318,9 @@ if __name__ == "__main__":
 
         # Now, we multiply u[k] by v[pos] for each tuple
         S_temp = S_temp.join(v_final).where(1).equal_to(0) \
-            .using(lambda s_el, v_el: (s_el[0], s_el[1], s_el[2], s_el[3] * v_el[1]))
+            .using(lambda s_el, v_el: (s_el[0],
+                                       s_el[1],
+                                       s_el[2], s_el[3] * v_el[1]))
 
         # We calculate val - (u[r] * v[pos])
         S_temp = S_temp.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
