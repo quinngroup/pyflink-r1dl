@@ -62,6 +62,7 @@ def vector_matrix(u__, S_):
     v_ = u__ \
         .join_with_huge(S_).where(0).equal_to(0) \
         .using(lambda u_el, s_el: (s_el[1], s_el[2] * u_el[1])) \
+        .set_parallelism(3) \
         .name('VectorMatrix')
 
     v_ = v_ \
@@ -272,6 +273,7 @@ if __name__ == "__main__":
         u_new = v \
             .join_with_huge(S).where(0).equal_to(1) \
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
+            .set_parallelism(3) \
             .name('MatrixVector')
 
         # Now, add up all the products to get the dot product result,
@@ -286,7 +288,8 @@ if __name__ == "__main__":
 
         # Update for the next iteration
         delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
-            .using(lambda new, old: (new[0], old[1] - new[1]))
+            .using(lambda new, old: (new[0], old[1] - new[1])) \
+            .set_parallelism(3)
         delta = delta.reduce_group(MagnitudeGroupReducer()) \
             .name('MagnitudeGroupReducer')
         delta = delta.filter(lambda d: d[1] > epsilon)
@@ -314,13 +317,15 @@ if __name__ == "__main__":
         # Our original data is formatted in tuples of (k, pos, value)
         # First, we add u[k] to each tuple
         S_temp = S.join(u_new_final).where(0).equal_to(0) \
-            .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1]))
+            .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1])) \
+            .set_parallelism(3)
 
         # Now, we multiply u[k] by v[pos] for each tuple
         S_temp = S_temp.join(v_final).where(1).equal_to(0) \
             .using(lambda s_el, v_el: (s_el[0],
                                        s_el[1],
-                                       s_el[2], s_el[3] * v_el[1]))
+                                       s_el[2], s_el[3] * v_el[1])) \
+            .set_parallelism(3)
 
         # We calculate val - (u[r] * v[pos])
         S_temp = S_temp.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
