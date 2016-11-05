@@ -45,10 +45,12 @@ def get_top_v(r, u, s):
     v_ = vector_matrix(u, s)
 
     # sort v by using sort_group after grouping on a dummy field
-    v_ = v_.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
+    v_ = v_.map(lambda x: (x[0], x[1], 0)) \
+        .set_parallelism(3).name('VPreSorter')
     v_ = v_ \
         .group_by(2).sort_group(1, Order.DESCENDING) \
         .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
+        .set_parallelism(3) \
         .name('VSorter')
 
     v_top_R_ = v_.first(r).name('VFirst')
@@ -90,7 +92,8 @@ class RandomVectorFlatMapper(FlatMapFunction):
 def random_vector(num_elements, rng=random):
     """Generates a vector of random numbers. Does NOT normalize."""
     dataset = env.generate_sequence(1, num_elements).zip_with_index()
-    dataset = dataset.map(lambda x: (x[0], rng.random()))
+    dataset = dataset.map(lambda x: (x[0], rng.random())) \
+        .set_parallelism(3)
     return dataset
 
 
@@ -246,7 +249,8 @@ if __name__ == "__main__":
     # Convert each line to a tuple: (row number, vec pos, value)
     S = raw_data \
         .zip_with_index() \
-        .reduce_group(SExploderFlatMapper()) \
+        .flat_map(SExploderFlatMapper()) \
+        .set_parallelism(3) \
         .name('SExploderFlatMapper')
 
     # Start the loop!
@@ -298,7 +302,8 @@ if __name__ == "__main__":
 
         # Save the newly-computed u and v to the output files;
         u_new_final.write_csv(file_D+"."+str(m),
-                              write_mode=WriteMode.OVERWRITE)
+                              write_mode=WriteMode.OVERWRITE) \
+            .set_parallelism(1)
 
         # Compute new v from final u
         v_final = get_top_v(R, u_new_final, S)
@@ -309,7 +314,8 @@ if __name__ == "__main__":
         v_zeroes = env.from_elements(*[(t, 0.0) for t in range(T)])
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1)
-        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE)
+        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE) \
+            .set_parallelism(1)
 
         # P4: Deflation step. Update the primary data matrix S.
         # This replaces deflate in the original Spark implementation.
