@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python3
 # Flictionary Learning: Rank-1 Dictionary Learning in Flink!
 # Probably PEP 8 compliant.
 
