@@ -325,19 +325,17 @@ if __name__ == "__main__":
         # We want k, vector - (u[k] * v) for each vector in the original data
         # Our original data is formatted in tuples of (k, pos, value)
         # First, we add u[k] to each tuple
-        S_temp = S.join(u_new_final).where(0).equal_to(0) \
-            .using(lambda s_el, u_el: (s_el[0], s_el[1], s_el[2], u_el[1])) \
+        S_temp = S.join_with_tiny(u_new_final).where(0).equal_to(0) \
+            .project_first(0, 1, 2).project_second(1) \
             .set_parallelism(parallelism)
 
-        # Now, we multiply u[k] by v[pos] for each tuple
-        S_temp = S_temp.join(v_final).where(1).equal_to(0) \
+        # Now, we multiply u[k] by v[pos] and get
+        # val - (u[r] * v[pos]) for each tuple
+        S_temp = S_temp.join_with_tiny(v_final).where(1).equal_to(0) \
             .using(lambda s_el, v_el: (s_el[0],
                                        s_el[1],
-                                       s_el[2], s_el[3] * v_el[1])) \
+                                       s_el[2] - (s_el[3] * v_el[1]))) \
             .set_parallelism(parallelism)
-
-        # We calculate val - (u[r] * v[pos])
-        S_temp = S_temp.map(lambda s_el: (s_el[0], s_el[1], s_el[2] - s_el[3]))
 
         # Finally, add up everything
         S = S_temp.group_by(0, 1).aggregate(Sum, 1)
