@@ -45,12 +45,10 @@ def get_top_v(r, u, s):
     v_ = vector_matrix(u, s)
 
     # sort v by using sort_group after grouping on a dummy field
-    v_ = v_.map(lambda x: (x[0], x[1], 0)) \
-        .set_parallelism(parallelism).name('VPreSorter')
+    v_ = v_.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
     v_ = v_ \
         .group_by(2).sort_group(1, Order.DESCENDING) \
         .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
-        .set_parallelism(parallelism) \
         .name('VSorter')
 
     v_top_R_ = v_.first(r).name('VFirst')
@@ -64,7 +62,6 @@ def vector_matrix(u__, S_):
     v_ = u__ \
         .join_with_huge(S_).where(0).equal_to(0) \
         .using(lambda u_el, s_el: (s_el[1], s_el[2] * u_el[1])) \
-        .set_parallelism(parallelism) \
         .name('VectorMatrix')
 
     v_ = v_ \
@@ -92,8 +89,7 @@ class RandomVectorFlatMapper(FlatMapFunction):
 def random_vector(num_elements, rng=random):
     """Generates a vector of random numbers. Does NOT normalize."""
     dataset = env.generate_sequence(1, num_elements).zip_with_index()
-    dataset = dataset.map(lambda x: (x[0], rng.random())) \
-        .set_parallelism(parallelism)
+    dataset = dataset.map(lambda x: (x[0], rng.random()))
     return dataset
 
 
@@ -161,8 +157,6 @@ if __name__ == "__main__":
                              "results between the Java and Python "
                              "implementations. Requires java-random package. "
                              "(optional)")
-    parser.add_argument("-c", "--parallelism", type=int, required=False, default=1,
-                        help="Maximum operator parallelism. (default=1)")
 
     # Inputs.
     parser.add_argument("-i", "--input", required=True,
@@ -211,7 +205,6 @@ if __name__ == "__main__":
     epsilon = args['epsilon']  # convergence stopping criterion
     M = args['mdicatom']  # dimensionality of the learned dictionary
     R = int(round(args['pnonzero'] * P))  # enforces sparsity
-    parallelism = args['parallelism']
 
     # seed random number generator
     rng = initialize_rng(args['seed'], args['javarand'])
@@ -253,7 +246,6 @@ if __name__ == "__main__":
     S = raw_data \
         .zip_with_index() \
         .flat_map(SExploderFlatMapper()) \
-        .set_parallelism(parallelism) \
         .name('SExploderFlatMapper')
 
     # Start the loop!
@@ -280,7 +272,6 @@ if __name__ == "__main__":
         u_new = v \
             .join_with_huge(S).where(0).equal_to(1) \
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
-            .set_parallelism(parallelism) \
             .name('MatrixVector')
 
         # Now, add up all the products to get the dot product result,
@@ -295,8 +286,7 @@ if __name__ == "__main__":
 
         # Update for the next iteration
         delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
-            .using(lambda new, old: (new[0], old[1] - new[1])) \
-            .set_parallelism(parallelism)
+            .using(lambda new, old: (new[0], old[1] - new[1]))
         delta = delta.reduce_group(MagnitudeGroupReducer()) \
             .name('MagnitudeGroupReducer')
         delta = delta.filter(lambda d: d[1] > epsilon)
@@ -326,16 +316,14 @@ if __name__ == "__main__":
         # Our original data is formatted in tuples of (k, pos, value)
         # First, we add u[k] to each tuple
         S_temp = S.join_with_tiny(u_new_final).where(0).equal_to(0) \
-            .project_first(0, 1, 2).project_second(1) \
-            .set_parallelism(parallelism)
+            .project_first(0, 1, 2).project_second(1)
 
         # Now, we multiply u[k] by v[pos] and get
         # val - (u[r] * v[pos]) for each tuple
         S_temp = S_temp.join_with_tiny(v_final).where(1).equal_to(0) \
             .using(lambda s_el, v_el: (s_el[0],
                                        s_el[1],
-                                       s_el[2] - (s_el[3] * v_el[1]))) \
-            .set_parallelism(parallelism)
+                                       s_el[2] - (s_el[3] * v_el[1])))
 
         # Finally, add up everything
         S = S_temp.group_by(0, 1).aggregate(Sum, 1)
