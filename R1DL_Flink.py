@@ -278,7 +278,7 @@ if __name__ == "__main__":
         # and remove the vector position field (second field from the left)
         u_new = u_new.group_by(0) \
             .aggregate(Sum, 2) \
-            .map(lambda x: (x[0], x[2]))
+            .project(0, 2)
         ################################################################
 
         u_new = u_new.reduce_group(NormalizeVectorGroupReducer())\
