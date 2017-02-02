@@ -303,8 +303,8 @@ if __name__ == "__main__":
 
         # Fill in missing spots with zeroes
         # Fill with 0.0, not 0 or else Flink thinks these are
-        # ONGS and NOT doubles!
-        v_zeroes = env.from_elements(*[(t, 0.0) for t in range(T)])
+        # LONGS and NOT doubles!
+        v_zeroes = env.from_elements(*[(p, 0.0) for p in range(P)])
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1)
         v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE) \
