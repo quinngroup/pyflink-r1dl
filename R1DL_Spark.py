@@ -122,16 +122,21 @@ if __name__ == "__main__":
         help = "Number of the dictionary atoms.")
     parser.add_argument("-e", "--epsilon", type = float, required = True,
         help = "The value of epsilon.")
+    parser.add_argument("-z", "--seed", type=int, required=False,
+        help="Random seed. (optional)")
 
     # Outputs.
     parser.add_argument("-d", "--dictionary", required = True,
         help = "Output path to dictionary file.(file_D)")
     parser.add_argument("-o", "--output", required = True,
         help = "Output path to z matrix.(file_z)")
-    parser.add_argument("-prefix", "--prefix", required = True,
+    parser.add_argument("-x", "--prefix", required = True,
         help = "Prefix strings to the output files")
 
     args = vars(parser.parse_args())
+
+    if (not args['seed'] is None):
+        np.random.seed(args['seed'])
 
     # Initialize the SparkContext. This is where you can create RDDs,
     # the Spark abstraction for distributed data sets.
