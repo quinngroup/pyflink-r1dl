@@ -178,10 +178,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
     parser.add_argument("-z", "--seed", type=int, required=False,
-                        help="Random seed. NOTE that because of the nature of "
-                             "the Python API, if seed is specified, every "
-                             "random u vector will have the same random "
-                             "numbers! (optional)")
+                        help="Random seed. (optional)")
 
     # Outputs.
     parser.add_argument("-d", "--dictionary", required=True,
@@ -265,6 +262,17 @@ if __name__ == "__main__":
 
     # Start the loop!
     for m in range(M):
+        # If seed is set, the RNG will be in the same state with every generated
+        # u vector, because the Python API spawns new Python processes for each
+        # operation. Thus, if seed is set, skip the number of random numbers
+        # that would have generated if the operations had taken place in the
+        # same Python process.
+        # This might take up some performance time, but is included only when
+        # the seed is specified for reproductivity purposes.
+        if args['seed']:
+            for z in range(m * T):
+                rng.random()
+
         env = get_environment()
 
         S = env.read_csv(get_temporary_S_path(m), (INT, INT, FLOAT))
