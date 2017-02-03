@@ -11,7 +11,7 @@ import sys
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.GroupReduceFunction import GroupReduceFunction
-from flink.plan.Constants import Order, WriteMode
+from flink.plan.Constants import Order, WriteMode, INT, FLOAT
 from flink.plan.Environment import get_environment
 
 
@@ -86,9 +86,9 @@ class RandomVectorFlatMapper(FlatMapFunction):
         return list(enumerate(vec))
 
 
-def random_vector(num_elements, rng=random):
+def random_vector(environment, num_elements, rng=random):
     """Generates a vector of random numbers. Does NOT normalize."""
-    dataset = env.generate_sequence(1, num_elements).zip_with_index()
+    dataset = environment.generate_sequence(1, num_elements).zip_with_index()
     dataset = dataset.map(lambda x: (x[0], rng.random()))
     return dataset
 
@@ -139,6 +139,10 @@ def initialize_rng(seed=None, java=False):
     return rng
 
 
+def get_temporary_S_path(m):
+    return os.path.join(temporary_directory, 'temp_S.' + str(m))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Flictionary Learning',
                                      add_help='How to use',
@@ -186,6 +190,10 @@ if __name__ == "__main__":
                         help="Output path to z matrix. (file_z)")
     parser.add_argument("-x", "--prefix", required=True,
                         help="Prefix strings to the output files")
+    parser.add_argument("-y", "--temporary", required=True,
+                        help="Temporary directory (on HDFS if you're using a "
+                             "cluster) for storing intermediate files. A suffix"
+                             "will be added to the end of this path.")
 
     args = vars(parser.parse_args())
 
@@ -236,22 +244,33 @@ if __name__ == "__main__":
     file_D = os.path.join(args['dictionary'], "{prefix}_D.txt".format(**args))
     file_z = os.path.join(args['output'], "{prefix}_z.txt".format(**args))
 
+    r1dl_id = '{0:.8f}'.format(random.random())  # used for temporary files
+    temporary_directory = os.path.join(args['temporary'],
+                                       'r1dl_data_' + r1dl_id)
+
     # Initialize the Flink environment.
-    env = get_environment()
+    env_first = get_environment()
 
     # Read the data and convert it into a data set of lines
-    raw_data = env.read_text(args['input'])
+    raw_data = env_first.read_text(args['input'])
 
     # Convert each line to a tuple: (row number, vec pos, value)
-    S = raw_data \
+    raw_data \
         .zip_with_index() \
         .flat_map(SExploderFlatMapper()) \
-        .name('SExploderFlatMapper')
+        .name('SExploderFlatMapper') \
+        .write_csv(get_temporary_S_path(0), write_mode=WriteMode.OVERWRITE)
+
+    env_first.execute(local=args['local'])
 
     # Start the loop!
     for m in range(M):
+        env = get_environment()
+
+        S = env.read_csv(get_temporary_S_path(m), (INT, INT, FLOAT))
+
         # Generate a random vector, subtract off its mean, and normalize it.
-        u_old = random_vector(T, rng)
+        u_old = random_vector(env, T, rng)
         u_old = u_old.reduce_group(NormalizeVectorGroupReducer()) \
             .name('Random u')
         u_old_it = u_old.iterate(max_iterations)
@@ -326,8 +345,10 @@ if __name__ == "__main__":
                                        s_el[2] - (s_el[3] * v_el[1])))
 
         # Finally, add up everything
-        S = S_temp.group_by(0, 1).aggregate(Sum, 1)
+        # Write the new S matrix to a temporary file for use in the next dict atom
+        S = S_temp.group_by(0, 1).aggregate(Sum, 1) \
+            .write_csv(get_temporary_S_path(m+1), write_mode=WriteMode.OVERWRITE)
 
-    env.execute(local=args['local'])
+        env.execute(local=args['local'])
 
     # All done! Write out the matrices as text files.
