@@ -8,6 +8,8 @@ import os
 import random
 import sys
 
+import numpy as np
+
 from flink.functions.Aggregation import Sum
 from flink.functions.FlatMapFunction import FlatMapFunction
 from flink.functions.GroupReduceFunction import GroupReduceFunction
@@ -128,15 +130,23 @@ class MagnitudeGroupReducer(GroupReduceFunction):
         collector.collect((0, mag))
 
 
+class RngWrapper(object):
+    """Compatibility wrapper for different RNG methods."""
+    def random(self):
+        """Assign something to me."""
+        pass
+
+
 def initialize_rng(seed=None, java=False):
-    rng = None
+    wrapper = RngWrapper()
     if java:
         import javarandom
-        rng = javarandom.Random(seed)
-        rng.random = rng.nextDouble  # shim
+        r = javarandom.Random(seed)
+        wrapper.random = r.nextDouble
     else:
-        rng = random.Random(seed)
-    return rng
+        r = np.random.RandomState(seed)
+        wrapper.random = r.random_sample
+    return wrapper
 
 
 def get_temporary_S_path(m):
