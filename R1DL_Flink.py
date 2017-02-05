@@ -332,8 +332,7 @@ if __name__ == "__main__":
 
         # Save the newly-computed u and v to the output files;
         u_new_final.write_csv(file_D+"."+str(m),
-                              write_mode=WriteMode.OVERWRITE) \
-            .set_parallelism(1)
+                              write_mode=WriteMode.OVERWRITE)
 
         # Compute new v from final u
         v_final = get_top_v(R, u_new_final, S)
@@ -344,8 +343,7 @@ if __name__ == "__main__":
         v_zeroes = env.from_elements(*[(p, 0.0) for p in range(P)])
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1)
-        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE) \
-            .set_parallelism(1)
+        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE)
 
         # P4: Deflation step. Update the primary data matrix S.
         # This replaces deflate in the original Spark implementation.
