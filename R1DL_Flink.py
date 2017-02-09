@@ -47,13 +47,15 @@ def get_top_v(r, u, s):
     v_ = vector_matrix(u, s)
 
     # sort v by using sort_group after grouping on a dummy field
-    v_ = v_.map(lambda x: (x[0], x[1], 0)).name('VPreSorter')
+    v_ = v_.map(lambda x: (x[0], x[1], 0)).name('VPreSorter') \
+        .set_parallelism(parallelism)
     v_ = v_ \
         .group_by(2).sort_group(1, Order.DESCENDING) \
         .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
+        .set_parallelism(parallelism) \
         .name('VSorter')
 
-    v_top_R_ = v_.first(r).name('VFirst')
+    v_top_R_ = v_.first(r).set_parallelism(parallelism).name('VFirst')
     return v_top_R_
 
 
@@ -64,11 +66,13 @@ def vector_matrix(u__, S_):
     v_ = u__ \
         .join_with_huge(S_).where(0).equal_to(0) \
         .using(lambda u_el, s_el: (s_el[1], s_el[2] * u_el[1])) \
+        .set_parallelism(parallelism) \
         .name('VectorMatrix')
 
     v_ = v_ \
         .group_by(0) \
         .aggregate(Sum, 1) \
+        .set_parallelism(parallelism) \
         .name('VectorMatrixPost')
 
     return v_
@@ -79,6 +83,7 @@ class RandomVectorFlatMapper(FlatMapFunction):
     Takes a DataSet and replaces a single placeholder element with random
     numbers in [0.0, 1.0). Does NOT normalize.
     """
+
     def __init__(self, t_):
         self.T = t_
         super(RandomVectorFlatMapper, self).__init__()
@@ -90,8 +95,9 @@ class RandomVectorFlatMapper(FlatMapFunction):
 
 def random_vector(environment, num_elements, rng=random):
     """Generates a vector of random numbers. Does NOT normalize."""
-    dataset = environment.generate_sequence(1, num_elements).zip_with_index()
-    dataset = dataset.map(lambda x: (x[0], rng.random()))
+    dataset = environment.generate_sequence(1, num_elements) \
+        .set_parallelism(1).zip_with_index()
+    dataset = dataset.map(lambda x: (x[0], rng.random())).set_parallelism(1)
     return dataset
 
 
@@ -99,6 +105,7 @@ class NormalizeVectorGroupReducer(GroupReduceFunction):
     """
     Normalizes a vector in (index, value) format.
     """
+
     def reduce(self, iterator, collector):
         data = list(iterator)
         mean = 0.0
@@ -122,6 +129,7 @@ class MagnitudeGroupReducer(GroupReduceFunction):
     """
     Calculates the magnitude of a vector.
     """
+
     def reduce(self, iterator, collector):
         mag = 0
         for val in iterator:
@@ -132,6 +140,7 @@ class MagnitudeGroupReducer(GroupReduceFunction):
 
 class RngWrapper(object):
     """Compatibility wrapper for different RNG methods."""
+
     def random(self):
         """Assign something to me."""
         pass
@@ -187,6 +196,8 @@ if __name__ == "__main__":
                         help="Number of the dictionary atoms.")
     parser.add_argument("-e", "--epsilon", type=float, required=True,
                         help="The value of epsilon.")
+    parser.add_argument("-a", "--parallelism", type=int, required=False,
+                        help="Parallelism to use.")
     parser.add_argument("-z", "--seed", type=int, required=False,
                         help="Random seed. (optional)")
 
@@ -215,6 +226,10 @@ if __name__ == "__main__":
     # Sound like fun?
     ##################################################################
 
+    # parallelism to use. Python API has some quirks with parallelism, like not
+    # picking up on the default parallelism sometimes, or not using a specified
+    # parallelism; therefore we use this parameter.
+    parallelism = args['parallelism']
     T = args['rows']
     P = args['cols']
     epsilon = args['epsilon']  # convergence stopping criterion
@@ -257,6 +272,7 @@ if __name__ == "__main__":
 
     # Initialize the Flink environment.
     env_first = get_environment()
+    env_first.set_parallelism(parallelism)
 
     # Read the data and convert it into a data set of lines
     raw_data = env_first.read_text(args['input'])
@@ -284,12 +300,16 @@ if __name__ == "__main__":
                 rng.random()
 
         env = get_environment()
+        # needed to prevent normalization etc. group reduce functions from
+        # improperly running in parallel
+        env.set_parallelism(1)
 
         S = env.read_csv(get_temporary_S_path(m), (INT, INT, FLOAT))
 
         # Generate a random vector, subtract off its mean, and normalize it.
         u_old = random_vector(env, T, rng)
         u_old = u_old.reduce_group(NormalizeVectorGroupReducer()) \
+            .set_parallelism(1) \
             .name('Random u')
         u_old_it = u_old.iterate(max_iterations)
 
@@ -309,30 +329,38 @@ if __name__ == "__main__":
         u_new = v \
             .join_with_huge(S).where(0).equal_to(1) \
             .using(lambda v_el, s_el: (s_el[0], s_el[1], s_el[2] * v_el[1])) \
+            .set_parallelism(parallelism) \
             .name('MatrixVector')
 
         # Now, add up all the products to get the dot product result,
         # and remove the vector position field (second field from the left)
         u_new = u_new.group_by(0) \
             .aggregate(Sum, 2) \
-            .project(0, 2)
+            .set_parallelism(parallelism) \
+            .project(0, 2) \
+            .set_parallelism(parallelism)
         ################################################################
 
-        u_new = u_new.reduce_group(NormalizeVectorGroupReducer())\
+        u_new = u_new.reduce_group(NormalizeVectorGroupReducer()) \
+            .set_parallelism(1) \
             .name('NormalizeVector')
 
         # Update for the next iteration
         delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
-            .using(lambda new, old: (new[0], old[1] - new[1]))
+            .using(lambda new, old: (new[0], old[1] - new[1])) \
+            .set_parallelism(parallelism)
         delta = delta.reduce_group(MagnitudeGroupReducer()) \
-            .name('MagnitudeGroupReducer')
-        delta = delta.filter(lambda d: d[1] > epsilon)
+            .set_parallelism(1)
+        delta = delta.filter(lambda d: d[1] > epsilon) \
+            .set_parallelism(parallelism)
 
-        u_new_final = u_old_it.close_with(u_new, delta)
+        u_new_final = u_old_it.close_with(u_new, delta) \
+            .set_parallelism(parallelism)
 
         # Save the newly-computed u and v to the output files;
-        u_new_final.write_csv(file_D+"."+str(m),
-                              write_mode=WriteMode.OVERWRITE)
+        u_new_final.write_csv(file_D + "." + str(m),
+                              write_mode=WriteMode.OVERWRITE) \
+            .set_parallelism(parallelism)
 
         # Compute new v from final u
         v_final = get_top_v(R, u_new_final, S)
@@ -342,8 +370,10 @@ if __name__ == "__main__":
         # LONGS and NOT doubles!
         v_zeroes = env.from_elements(*[(p, 0.0) for p in range(P)])
         v_final = v_final.union(v_zeroes)
-        v_final = v_final.group_by(0).aggregate(Sum, 1)
-        v_final.write_csv(file_z+"."+str(m), write_mode=WriteMode.OVERWRITE)
+        v_final = v_final.group_by(0).aggregate(Sum, 1) \
+            .set_parallelism(parallelism)
+        v_final.write_csv(file_z + "." + str(m), write_mode=WriteMode.OVERWRITE) \
+            .set_parallelism(parallelism)
 
         # P4: Deflation step. Update the primary data matrix S.
         # This replaces deflate in the original Spark implementation.
@@ -351,20 +381,26 @@ if __name__ == "__main__":
         # Our original data is formatted in tuples of (k, pos, value)
         # First, we add u[k] to each tuple
         S_temp = S.join_with_tiny(u_new_final).where(0).equal_to(0) \
-            .project_first(0, 1, 2).project_second(1)
+            .project_first(0, 1, 2).project_second(1) \
+            .set_parallelism(parallelism)
 
         # Now, we multiply u[k] by v[pos] and get
         # val - (u[r] * v[pos]) for each tuple
         S_temp = S_temp.join_with_tiny(v_final).where(1).equal_to(0) \
             .using(lambda s_el, v_el: (s_el[0],
                                        s_el[1],
-                                       s_el[2] - (s_el[3] * v_el[1])))
+                                       s_el[2] - (s_el[3] * v_el[1]))) \
+            .set_parallelism(parallelism)
 
-        # Finally, add up everything
-        # Write the new S matrix to a temporary file for use in the next dict atom
+        # Finally, add up everything.
+        # Write the new S matrix to a temporary file
+        # for use in the next dict atom
         S = S_temp.group_by(0, 1).aggregate(Sum, 1) \
-            .write_csv(get_temporary_S_path(m+1), write_mode=WriteMode.OVERWRITE)
+            .set_parallelism(parallelism) \
+            .write_csv(get_temporary_S_path(m + 1),
+                       write_mode=WriteMode.OVERWRITE) \
+            .set_parallelism(parallelism)
 
         env.execute(local=args['local'])
 
-    # All done! Write out the matrices as text files.
+        # All done! Write out the matrices as text files.
