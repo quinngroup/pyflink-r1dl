@@ -83,9 +83,19 @@ def random_vector(environment, num_elements, rng=random):
     Generates a vector of random numbers in in [0.0, 1.0). Does NOT normalize.
     """
     dataset = environment.generate_sequence(1, num_elements) \
-        .set_parallelism(1).zip_with_index()
-    dataset = dataset.map(lambda x: (x[0], rng.random())).set_parallelism(1)
+        .set_parallelism(1)
+    dataset = dataset.map(lambda x: (x, rng.random())).set_parallelism(1)
     return dataset
+
+
+def zero_vector(environment, num_elements):
+    """
+    Generates a vector of zeroes.
+    """
+    dataset = environment.generate_sequence(1, num_elements)
+    dataset = dataset.map(lambda x: (x, 0.0))
+    return dataset
+
 
 
 class NormalizeVectorGroupReducer(GroupReduceFunction):
@@ -355,7 +365,7 @@ if __name__ == "__main__":
         # Fill in missing spots with zeroes
         # Fill with 0.0, not 0 or else Flink thinks these are
         # LONGS and NOT doubles!
-        v_zeroes = env.from_elements(*[(p, 0.0) for p in range(P)])
+        v_zeroes = zero_vector(env, P)
         v_final = v_final.union(v_zeroes)
         v_final = v_final.group_by(0).aggregate(Sum, 1) \
             .set_parallelism(parallelism)
