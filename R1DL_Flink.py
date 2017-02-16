@@ -78,23 +78,10 @@ def vector_matrix(u__, S_):
     return v_
 
 
-class RandomVectorFlatMapper(FlatMapFunction):
-    """
-    Takes a DataSet and replaces a single placeholder element with random
-    numbers in [0.0, 1.0). Does NOT normalize.
-    """
-
-    def __init__(self, t_):
-        self.T = t_
-        super(RandomVectorFlatMapper, self).__init__()
-
-    def flat_map(self, value, collector):
-        vec = [random.random() for i in range(self.T)]
-        return list(enumerate(vec))
-
-
 def random_vector(environment, num_elements, rng=random):
-    """Generates a vector of random numbers. Does NOT normalize."""
+    """
+    Generates a vector of random numbers in in [0.0, 1.0). Does NOT normalize.
+    """
     dataset = environment.generate_sequence(1, num_elements) \
         .set_parallelism(1).zip_with_index()
     dataset = dataset.map(lambda x: (x[0], rng.random())).set_parallelism(1)
