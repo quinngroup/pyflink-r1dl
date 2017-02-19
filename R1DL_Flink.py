@@ -51,7 +51,7 @@ def get_top_v(r, u, s):
         .set_parallelism(parallelism)
     v_ = v_ \
         .group_by(2).sort_group(1, Order.DESCENDING) \
-        .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i]) \
+        .reduce_group(lambda i, c: [(i_[0], i_[1]) for i_ in i], combinable=True) \
         .set_parallelism(parallelism) \
         .name('VSorter')
 
@@ -122,6 +122,16 @@ class NormalizeVectorGroupReducer(GroupReduceFunction):
             collector.collect((val[0], new_val))
 
 
+def mean(d, l):
+    return d.aggregate(Sum, 1).map(lambda x: (0, x[1] / l))
+
+
+def magnitude(d):
+    return d.map(lambda x: (x[0], x[1] ** 2)).set_parallelism(parallelism) \
+        .aggregate(Sum, 1).set_parallelism(parallelism) \
+        .map(lambda x: (0, math.sqrt(x[1])))
+
+
 class MagnitudeGroupReducer(GroupReduceFunction):
     """
     Calculates the magnitude of a vector.
@@ -157,6 +167,18 @@ def initialize_rng(seed=None, java=False):
 
 def get_temporary_S_path(m):
     return os.path.join(temporary_directory, 'temp_S.' + str(m))
+
+
+def normalize(v, l):
+    v_mean = mean(v, l)
+    v_mag = magnitude(v)
+    v = v.cross_with_tiny(v_mean) \
+        .using(lambda element, mean: (element[0], element[1] - mean[1])) \
+        .set_parallelism(parallelism)
+    v = v.cross_with_tiny(v_mag) \
+        .using(lambda element, mag: (element[0], element[1] / mag[1])) \
+        .set_parallelism(parallelism)
+    return v
 
 
 if __name__ == "__main__":
@@ -301,13 +323,12 @@ if __name__ == "__main__":
         # improperly running in parallel
         env.set_parallelism(1)
 
-        S = env.read_csv(get_temporary_S_path(m), (INT, INT, FLOAT))
+        S = env.read_csv(get_temporary_S_path(m), (INT, INT, FLOAT)) \
+            .set_parallelism(parallelism)
 
         # Generate a random vector, subtract off its mean, and normalize it.
         u_old = random_vector(env, T, rng)
-        u_old = u_old.reduce_group(NormalizeVectorGroupReducer()) \
-            .set_parallelism(1) \
-            .name('Random u')
+        u_old = normalize(u_old, T)
         u_old_it = u_old.iterate(max_iterations)
 
         # Start the inner loop: this learns a single atom.
@@ -338,18 +359,14 @@ if __name__ == "__main__":
             .set_parallelism(parallelism)
         ################################################################
 
-        u_new = u_new.reduce_group(NormalizeVectorGroupReducer()) \
-            .set_parallelism(1) \
-            .name('NormalizeVector')
+        u_new = normalize(u_new, T)
 
         # Update for the next iteration
         delta = u_new.join_with_huge(u_old_it).where(0).equal_to(0) \
             .using(lambda new, old: (new[0], old[1] - new[1])) \
             .set_parallelism(parallelism)
-        delta = delta.reduce_group(MagnitudeGroupReducer()) \
-            .set_parallelism(1)
-        delta = delta.filter(lambda d: d[1] > epsilon) \
-            .set_parallelism(parallelism)
+        delta = magnitude(delta)
+        delta = delta.filter(lambda d: d[1] > epsilon).name('Delta')
 
         u_new_final = u_old_it.close_with(u_new, delta) \
             .set_parallelism(parallelism)
