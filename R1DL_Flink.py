@@ -289,6 +289,8 @@ if __name__ == "__main__":
     temporary_directory = os.path.join(args['temporary'],
                                        'r1dl_data_' + r1dl_id)
 
+    run_times = []
+
     # Initialize the Flink environment.
     env_first = get_environment()
     env_first.set_parallelism(parallelism)
@@ -303,7 +305,9 @@ if __name__ == "__main__":
         .name('SExploderFlatMapper') \
         .write_csv(get_temporary_S_path(0), write_mode=WriteMode.OVERWRITE)
 
-    env_first.execute(local=args['local'])
+    env_first_res = env_first.execute(local=args['local'])
+    if env_first_res is not None:
+        run_times.append((-1, env_first_res.get_net_runtime()))
 
     # Start the loop!
     for m in range(M):
@@ -415,6 +419,14 @@ if __name__ == "__main__":
                        write_mode=WriteMode.OVERWRITE) \
             .set_parallelism(parallelism)
 
-        env.execute(local=args['local'])
+        env_res = env.execute(local=args['local'])
+        if env_res is not None:
+            run_times.append((m, env_res.get_net_runtime()))
 
         # All done! Write out the matrices as text files.
+
+    env_run_times = get_environment()
+    env_run_times.set_parallelism(1)
+    rt = env_run_times.from_elements(*run_times)
+    rt.write_csv(file_z + ".run_times", write_mode=WriteMode.OVERWRITE)
+    env_run_times.execute(local=args['local'])
